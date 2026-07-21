@@ -158,16 +158,16 @@ main{max-width:980px;margin:6px auto 30px;padding:0 16px}
 /* home/away day vignettes */
 .home-hero,.away-hero{
   height:225px;margin:8px -2px -40px;position:relative;
-  background-size:cover;background-position:center 45%;
+  background-size:cover;background-position:center 37%;
   -webkit-mask-image:radial-gradient(115% 95% at 50% 42%,#000 50%,transparent 97%);
   mask-image:radial-gradient(115% 95% at 50% 42%,#000 50%,transparent 97%);
   opacity:0;animation:heroin .9s ease .05s forwards;
 }
-.away-hero.art-albi{background-position:center 35%}
+.away-hero.art-albi{background-position:center 24%}
 .away-hero.art-bergen{background-position:center 48%}
 @keyframes heroin{to{opacity:.92}}
 @media(prefers-reduced-motion:reduce){.home-hero,.away-hero{animation:none;opacity:.92}}
-@media(max-width:600px){.home-hero,.away-hero{height:150px;margin-bottom:-32px}}
+@media(max-width:600px){.home-hero,.away-hero{height:225px;margin-bottom:-32px}}
 .card{position:relative}
 
 /* modal */
@@ -224,6 +224,8 @@ main{max-width:980px;margin:6px auto 30px;padding:0 16px}
 
 <div class="foot">
   <span id="storage-note"></span>
+  <span style="flex:1"></span>
+  <button class="btn-ghost" id="passbtn" onclick="changePass()">Change passphrase</button>
 </div>
 
 <nav class="tabs">
@@ -310,6 +312,7 @@ function render(){
   else if(state.view==='todo')el.innerHTML=viewTodo();
   else el.innerHTML=viewTrips();
   document.getElementById('storage-note').textContent=statusText();
+  const pb=document.getElementById('passbtn');if(pb)pb.style.display=cloudEnabled()?'':'none';
   save();
 }
 function go(v){state.view=v;render();}
@@ -681,7 +684,7 @@ async function cloudInit(){
   if(!cloudEnabled()){cloud.status='local';return;}
   let pass=null;try{pass=localStorage.getItem('summer26_pass');}catch(e){}
   if(!pass){askPass();return;}
-  await cloudConnect(pass);
+  await cloudConnect(pass,false);
   openCatchup();
 }
 function askPass(){
@@ -696,25 +699,30 @@ async function submitPass(){
   if(!v)return;
   try{localStorage.setItem('summer26_pass',v);}catch(e){}
   closeModal();
-  await cloudConnect(v);
+  await cloudConnect(v,true);
   openCatchup();
 }
-async function cloudConnect(pass){
+async function cloudConnect(pass,fresh){
   cloud.key='s26-'+await hashPass(pass);
-  try{await cloudPull();cloud.status='synced';}catch(e){cloud.status='offline';}
+  try{await cloudPull(fresh);cloud.status='synced';}catch(e){cloud.status='offline';}
   render();
 }
-async function cloudPull(){
+function changePass(){
+  try{localStorage.removeItem('summer26_pass');}catch(e){}
+  clearTimeout(cloud.timer);cloud.key=null;cloud.status='local';
+  askPass();
+}
+async function cloudPull(preferRemote){
   const r=await fetch(`${SUPA.url}/rest/v1/planner?id=eq.${cloud.key}&select=data`,{headers:supaHeaders()});
   if(!r.ok)throw new Error('pull '+r.status);
   const rows=await r.json();
   if(rows.length){
     const remote=rows[0].data||{};
-    if((remote.savedAt||0)>(state.savedAt||0)){
+    if(preferRemote||(remote.savedAt||0)>(state.savedAt||0)){
       state=Object.assign(blank(),remote);
       state.testDate='';
       try{localStorage.setItem('summer26',JSON.stringify(state));}catch(e){}
-    }else if((state.savedAt||0)>(remote.savedAt||0)){cloudPush();}
+    }else if(!preferRemote&&(state.savedAt||0)>(remote.savedAt||0)){cloudPush();}
   }else{cloudPush();}
 }
 function cloudPush(){
