@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <title>Summer 2026 · Holiday Planner</title>
-<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=2">
-<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png?v=2">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Karla:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
@@ -232,6 +232,10 @@ main{max-width:980px;margin:6px auto 30px;padding:0 16px}
   <span id="storage-note"></span>
   <span style="flex:1"></span>
   <button class="btn-ghost" id="passbtn" onclick="lockApp()">Lock</button>
+  <label class="switch">Test date:
+    <input type="date" id="testdate" style="padding:3px 6px;font-size:12px" onchange="setTestDate(this.value)">
+  </label>
+  <button class="btn-ghost" onclick="setTestDate('')">reset</button>
 </div>
 
 <nav class="tabs">
@@ -251,8 +255,8 @@ main{max-width:980px;margin:6px auto 30px;padding:0 16px}
 const SUPA={url:'https://khzebvjhyofaxoopifgl.supabase.co',anon:'sb_publishable_MwHxCph1pFbgbX8vhq5Kfw_m8QSz7ta'};
 /* ------------------------------------------------------------------ */
 const START='2026-07-20', END='2026-08-26';
-const CATS={Social:'#D9705F',Admin:'#2E4159',Music:'#C29B3C',Fitness:'#7E8F6C',House:'#B0763F','Trip prep':'#55606B',Other:'#8A8177'};
-const CAT_RENAMES={Family:'Social',Cycling:'Fitness'};
+const CATS={Social:'#D9705F',Admin:'#2E4159',Music:'#C29B3C',Fitness:'#7E8F6C',House:'#B0763F','Trip prep':'#55606B',Work:'#8A8177'};
+const CAT_RENAMES={Family:'Social',Cycling:'Fitness',Other:'Work'};
 
 /* ---------- state & storage ---------- */
 let state=null, storageOK=true;
@@ -264,10 +268,11 @@ function save(){
 }
 function load(){try{const s=localStorage.getItem('summer26');return s?JSON.parse(s):null;}catch(e){storageOK=false;return null;}}
 state=load()||blank();
-[...state.tasks,...state.activities].forEach(o=>{if(CAT_RENAMES[o.cat])o.cat=CAT_RENAMES[o.cat];});
+function fixCats(){[...state.tasks,...state.activities].forEach(o=>{if(CAT_RENAMES[o.cat])o.cat=CAT_RENAMES[o.cat];});}
+fixCats();
 
 /* ---------- date helpers ---------- */
-function todayISO(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+function todayISO(){if(state.testDate)return state.testDate;const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
 function parse(s){const[p,q,r]=s.split('-').map(Number);return new Date(Date.UTC(p,q-1,r));}
 function iso(d){return d.toISOString().slice(0,10);}
 function addDays(s,n){const d=parse(s);d.setUTCDate(d.getUTCDate()+n);return iso(d);}
@@ -323,6 +328,7 @@ function render(){
   else if(state.view==='week')el.innerHTML=viewWeek();
   else if(state.view==='todo')el.innerHTML=viewTodo();
   else el.innerHTML=viewTrips();
+  document.getElementById('testdate').value=state.testDate||'';
   document.getElementById('storage-note').textContent=statusText();
   const pb=document.getElementById('passbtn');if(pb)pb.style.display=cloudEnabled()?'':'none';
   save();
@@ -682,6 +688,9 @@ function doExport(){
   setTimeout(()=>window.print(),80);
 }
 
+/* ---------- test date ---------- */
+function setTestDate(v){state.testDate=v||'';save();openCatchup();render();}
+
 /* ---------- cloud sync ---------- */
 /* One fixed row; the password lives ONLY in the database (bcrypt-hashed).
    Every read and write calls a Postgres function that verifies it, so the
@@ -742,6 +751,7 @@ function adoptRemote(remote){
   state.activities=remote.activities||[];
   state.blocks=remote.blocks||[];
   state.savedAt=remote.savedAt||Date.now();
+  fixCats();
   cloud.lastData=dataSnapshot();
   try{localStorage.setItem('summer26',JSON.stringify(state));}catch(e){}
   cloud.status='synced';
