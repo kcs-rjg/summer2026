@@ -71,6 +71,7 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--brass);out
 .wash-day:nth-child(even){border-radius:6px 10px 7px 9px}
 .wash-day:hover{transform:translateY(-2px)}
 .wash-day.away{background:linear-gradient(160deg,var(--sage-wash),#D5DEC5)}
+.wash-day.guest{background:linear-gradient(160deg,var(--coral-wash),#F1D2C9)}
 .wash-day.today{box-shadow:0 0 0 2px var(--brass), 0 0 0 5px var(--brass-soft)}
 .wash-day.selected{border-color:var(--navy);border-width:2px}
 .wash-day.past{opacity:.62}
@@ -133,6 +134,7 @@ main{max-width:980px;margin:6px auto 30px;padding:0 16px}
 .weekgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-top:12px}
 .wcell{background:#FDFAF2;border:1px solid var(--line);border-radius:10px 8px 11px 9px;padding:8px 7px;min-height:110px;font-size:12px;cursor:pointer}
 .wcell.away{background:linear-gradient(165deg,var(--sage-wash),#DCE3CC)}
+.wcell.guest{background:linear-gradient(165deg,var(--coral-wash),#F2D7CE)}
 .wcell.today{box-shadow:0 0 0 2px var(--brass)}
 .wcell .wd{font-family:'Fraunces',serif;font-weight:600;font-size:14px;color:var(--navy-deep)}
 .wcell .wdow{font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-soft)}
@@ -276,6 +278,7 @@ function esc(x){return String(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
 
 /* ---------- domain helpers ---------- */
 function blockFor(date){return state.blocks.find(b=>date>=b.start&&date<=b.end)||null;}
+function blockIsHome(b){return !!b&&(b.art||'albi')==='home';}
 function tasksOn(date){return state.tasks.filter(t=>t.status!=='unassigned'&&t.start&&date>=t.start&&date<=t.end);}
 function actsOn(date){return state.activities.filter(a=>a.date===date&&a.status!=='expired');}
 function taskDoneOn(t,date){return t.status==='complete'?(t.completedOn?date<=t.completedOn||!!t.progress[date]||date===t.completedOn:true):!!t.progress[date];}
@@ -336,7 +339,7 @@ function washWeek(label,days){
   const t=todayISO();
   let cells=days.map(d=>{
     const b=blockFor(d),done=dayAllDone(d),dd=parse(d);
-    const cls=['wash-day',b?'away':'',d===t?'today':'',d===state.selected?'selected':'',d<t?'past':''].join(' ');
+    const cls=['wash-day',b?(blockIsHome(b)?'guest':'away'):'',d===t?'today':'',d===state.selected?'selected':'',d<t?'past':''].join(' ');
     const dots=done===null?'':`<span class="dot ${done?'dot-done':'dot-open'}"></span>`;
     return `<button class="${cls}" onclick="pick('${d}')" aria-label="${fmtShort(d)}">
       <span class="dow">${DOW[dd.getUTCDay()]}</span><span class="dnum">${dd.getUTCDate()}</span><span class="dots">${dots}</span></button>`;
@@ -370,7 +373,7 @@ function viewDay(){
   const catOpts=Object.keys(CATS).map(c=>`<option>${c}</option>`).join('');
   return `<div class="daynav">
       <button class="navbtn" onclick="shiftDay(-1)" ${d<=START?'disabled':''}>‹</button>
-      <div class="dtitle">${fmtLong(d)}<span class="tag ${b?'tag-away':'tag-home'}">${b?'Away · '+esc(b.name):'Home'}</span></div>
+      <div class="dtitle">${fmtLong(d)}<span class="tag ${b&&!blockIsHome(b)?'tag-away':'tag-home'}">${b?(blockIsHome(b)?'Home · ':'Away · ')+esc(b.name):'Home'}</span></div>
       <button class="navbtn" onclick="shiftDay(1)" ${d>=END?'disabled':''}>›</button>
     </div>
     ${b?`<div class="away-hero art-${b.art||'albi'}" aria-hidden="true"></div>`:'<div class="home-hero" aria-hidden="true"></div>'}
@@ -404,7 +407,7 @@ function viewWeek(){
       ...tasksOn(d).map(task=>`<li class="${(task.status==='complete'||task.progress[d])?'done':''}"><i style="background:${CATS[task.cat]}"></i>${esc(task.title)}</li>`),
       ...actsOn(d).map(a=>`<li class="${a.status==='done'?'done':''}"><i style="background:${CATS[a.cat]}"></i>${esc(a.title)}</li>`)
     ].join('');
-    return `<div class="wcell ${b?'away':''} ${d===t?'today':''}" onclick="pick('${d}')">
+    return `<div class="wcell ${b?(blockIsHome(b)?'guest':'away'):''} ${d===t?'today':''}" onclick="pick('${d}')">
       <div class="wdow">${DOW[dd.getUTCDay()]}${b?' · '+esc(b.name):''}</div><div class="wd">${dd.getUTCDate()} ${MON[dd.getUTCMonth()].slice(0,3)}</div><ul>${rows}</ul></div>`;
   }).join('');
   return `<div class="daynav">
@@ -456,7 +459,7 @@ function viewTrips(){
       <div class="muted">${fmtLong(b.start)} – ${fmtLong(b.end)} · ${between(b.start,b.end).length} days · ${({albi:'Albi scene',bergen:'Bergen scene',home:'Home scene'})[b.art||'albi']}</div></div>
       <button class="more" onclick="delBlock('${b.id}')" aria-label="Delete trip">✕</button></div>`).join('');
   return `<div class="card alt"><h2>Trips away</h2>
-      <p class="muted">Name a trip and its dates; those days are washed green across the planner and carry your chosen scene on the day view. Everything else counts as home.</p>
+      <p class="muted">Name a block of days and choose its scene. Albi and Bergen mark you as away (washed green); the Home scene keeps the days marked Home but blocks them out (washed coral) - for guests staying, for instance.</p>
       ${rows||'<p class="muted" style="margin-top:8px">No trips yet.</p>'}
       <hr class="rule">
       <div class="addrow">
@@ -661,7 +664,7 @@ function doExport(){
       ...ts.map(t=>`<li class="${(t.status==='complete'||t.progress[d])?'pdone':''}">${esc(t.title)} <em>(${t.cat})</em></li>`),
       ...as.map(a=>`<li class="${a.status==='done'?'pdone':''}">${esc(a.title)} <em>(${a.cat})</em></li>`)
     ].join('');
-    html+=`<div class="pday"><h2>${fmtLong(d)} <span class="ptag">${b?'Away · '+esc(b.name):'Home'}</span></h2>${lis?'<ul>'+lis+'</ul>':'<ul><li>-</li></ul>'}</div>`;
+    html+=`<div class="pday"><h2>${fmtLong(d)} <span class="ptag">${b?(blockIsHome(b)?'Home · ':'Away · ')+esc(b.name):'Home'}</span></h2>${lis?'<ul>'+lis+'</ul>':'<ul><li>-</li></ul>'}</div>`;
   });
   if(withTodo){
     const un=state.tasks.filter(t=>t.status==='unassigned'&&!t.exclude);
