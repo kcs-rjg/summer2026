@@ -228,7 +228,7 @@ main{max-width:980px;margin:6px auto 30px;padding:0 16px}
 <div class="foot">
   <span id="storage-note"></span>
   <span style="flex:1"></span>
-  <button class="btn-ghost" id="passbtn" onclick="changePass()">Change passphrase</button>
+  <button class="btn-ghost" id="passbtn" onclick="lockApp()">Lock</button>
 </div>
 
 <nav class="tabs">
@@ -254,7 +254,11 @@ const CAT_RENAMES={Family:'Social',Cycling:'Fitness'};
 /* ---------- state & storage ---------- */
 let state=null, storageOK=true;
 function blank(){return {tasks:[],activities:[],blocks:[],testDate:'',selected:null,view:'day'};}
-function save(){state.savedAt=Date.now();try{localStorage.setItem('summer26',JSON.stringify(state));}catch(e){storageOK=false;}cloudPush();}
+function save(){
+  const snap=JSON.stringify({tasks:state.tasks,activities:state.activities,blocks:state.blocks});
+  if(typeof cloud!=='undefined'&&snap!==cloud.lastData){cloud.lastData=snap;state.savedAt=Math.max(Date.now(),(state.savedAt||0)+1);cloudPush();}
+  try{localStorage.setItem('summer26',JSON.stringify(state));}catch(e){storageOK=false;}
+}
 function load(){try{const s=localStorage.getItem('summer26');return s?JSON.parse(s):null;}catch(e){storageOK=false;return null;}}
 state=load()||blank();
 [...state.tasks,...state.activities].forEach(o=>{if(CAT_RENAMES[o.cat])o.cat=CAT_RENAMES[o.cat];});
@@ -483,7 +487,7 @@ function delBlock(id){state.blocks=state.blocks.filter(b=>b.id!==id);render();}
 function modal(html){document.getElementById('modal-root').innerHTML=`<div class="overlay" onclick="if(event.target===this)closeModal()"><div class="modal">${html}</div></div>`;}
 function closeModal(){
   document.getElementById('modal-root').innerHTML='';
-  if(cloud.pendingRemote){const r=cloud.pendingRemote;cloud.pendingRemote=null;applyRemote(r);}
+  if(cloud.pendingRemote){const r=cloud.pendingRemote;cloud.pendingRemote=null;adoptRemote(r);}
 }
 
 /* assign a master task */
@@ -676,107 +680,118 @@ function doExport(){
 }
 
 /* ---------- cloud sync ---------- */
-let cloud={key:null,timer:null,status:'local'};
+/* One fixed row; the password lives ONLY in the database (bcrypt-hashed).
+   Every read and write calls a Postgres function that verifies it, so the
+   public page source contains no secrets. */
+const ROW_ID='planner-main';
+
+let cloud={timer:null,status:'local',rt:null,pendingRemote:null,lastData:''};
 function cloudEnabled(){return !!(SUPA.url&&SUPA.anon);}
-async function hashPass(s){
-  if(window.crypto&&crypto.subtle){
-    const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode('summer26:'+s));
-    return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');
-  }
-  let h1=5381,h2=52711;
-  for(let i=0;i<s.length;i++){const c=s.charCodeAt(i);h1=(h1*33)^c;h2=(h2*33)^c;h1>>>=0;h2>>>=0;}
-  return h1.toString(16)+h2.toString(16)+s.length.toString(16);
-}
+function dataSnapshot(){return JSON.stringify({tasks:state.tasks,activities:state.activities,blocks:state.blocks});}
+cloud.lastData=dataSnapshot();
 function supaHeaders(){
   const h={apikey:SUPA.anon,'Content-Type':'application/json'};
   if(!SUPA.anon.startsWith('sb_'))h.Authorization='Bearer '+SUPA.anon;   // legacy JWT keys only
   return h;
 }
-async function cloudInit(){
-  if(!cloudEnabled()){cloud.status='local';return;}
-  let pass=null;try{pass=localStorage.getItem('summer26_pass');}catch(e){}
-  if(!pass){askPass();return;}
-  await cloudConnect(pass,false);
-  openCatchup();
+function storedPw(){try{return localStorage.getItem('summer26_pw')||'';}catch(e){return '';}}
+function unlocked(){return !cloudEnabled()||!!storedPw();}
+async function rpc(name,args){
+  const r=await fetch(`${SUPA.url}/rest/v1/rpc/${name}`,{method:'POST',headers:supaHeaders(),body:JSON.stringify(args)});
+  if(!r.ok){
+    let t='';try{t=await r.text();}catch(e){}
+    throw new Error(t.includes('bad password')?'badpass':'rpc '+r.status);
+  }
+  const t=await r.text();
+  return t?JSON.parse(t):null;
 }
-function askPass(){
-  modal(`<h2>Passphrase</h2>
-    <p class="muted">Enter the planner's passphrase. The same phrase on each device keeps them in step; a new phrase starts a fresh planner.</p>
-    <div class="row"><input type="password" id="pass-in" style="flex:1" onkeydown="if(event.key==='Enter')submitPass()">
-    <button class="btn btn-brass" onclick="submitPass()">Connect</button></div>`);
+/* --- password gate, verified by the database --- */
+function askPassword(msg){
+  modal(`<h2>Password</h2>
+    <p class="muted">${msg||'Enter the planner password.'}</p>
+    <div class="row"><input type="password" id="pass-in" style="flex:1" onkeydown="if(event.key==='Enter')submitPassword()">
+    <button class="btn btn-brass" onclick="submitPassword()">Open</button></div>`);
   setTimeout(()=>{const i=document.getElementById('pass-in');if(i)i.focus();},50);
 }
-async function submitPass(){
-  const v=document.getElementById('pass-in').value.trim();
+async function submitPassword(){
+  const v=document.getElementById('pass-in').value;
   if(!v)return;
-  try{localStorage.setItem('summer26_pass',v);}catch(e){}
+  let good=false;
+  try{good=await rpc('planner_check',{p:v});}
+  catch(e){askPassword('Could not reach the database - check your connection and try again.');return;}
+  if(!good){askPassword('Not quite - try again.');return;}
+  try{localStorage.setItem('summer26_pw',v);}catch(e){}
   closeModal();
-  await cloudConnect(v,true);
+  await connectCloud();
   openCatchup();
 }
-async function cloudConnect(pass,fresh){
-  cloud.key='s26-'+await hashPass(pass);
-  try{await cloudPull(fresh);cloud.status='synced';}catch(e){cloud.status='offline';}
-  startRealtime();
-  render();
+function lockApp(){try{localStorage.removeItem('summer26_pw');}catch(e){}location.reload();}
+function badPass(){
+  try{localStorage.removeItem('summer26_pw');}catch(e){}
+  stopRealtime();clearTimeout(cloud.timer);cloud.status='local';
+  askPassword('The password seems to have changed - enter the current one.');
 }
-function applyRemote(remote){
+/* --- data sync: only tasks, activities and blocks travel --- */
+function adoptRemote(remote){
   if(!remote||(remote.savedAt||0)<=(state.savedAt||0))return;
   if(document.querySelector('.overlay')){cloud.pendingRemote=remote;return;}
-  state=Object.assign(blank(),remote);
-  state.testDate='';
+  state.tasks=remote.tasks||[];
+  state.activities=remote.activities||[];
+  state.blocks=remote.blocks||[];
+  state.savedAt=remote.savedAt||Date.now();
+  cloud.lastData=dataSnapshot();
   try{localStorage.setItem('summer26',JSON.stringify(state));}catch(e){}
   cloud.status='synced';
   render();
 }
+async function connectCloud(){
+  if(!cloudEnabled()){cloud.status='local';setStatusNote();return;}
+  try{await cloudPull();cloud.status='synced';}
+  catch(e){if(e.message==='badpass'){badPass();return;}cloud.status='offline';}
+  startRealtime();
+  render();
+}
+/* Realtime: a broadcast "ping" channel. Devices announce "changed" after a
+   successful write; hearers pull through the password-gated function. The
+   ping itself carries no data, so an eavesdropper learns nothing. */
 function startRealtime(){
-  if(!cloudEnabled()||!cloud.key||cloud.rt)return;
+  if(!cloudEnabled()||cloud.rt)return;
   if(!(window.supabase&&window.supabase.createClient))return;   // CDN unavailable: polling covers it
   try{
     const c=window.supabase.createClient(SUPA.url,SUPA.anon);
-    cloud.rt=c.channel('planner-sync')
-      .on('postgres_changes',{event:'*',schema:'public',table:'planner',filter:'id=eq.'+cloud.key},
-        payload=>{const row=payload.new;if(row&&row.id===cloud.key)applyRemote(row.data);})
-      .subscribe();
+    cloud.rt=c.channel('planner-ping',{config:{broadcast:{self:false}}});
+    cloud.rt.on('broadcast',{event:'changed'},()=>{cloudPull().catch(e=>{if(e.message==='badpass')badPass();});});
+    cloud.rt.subscribe();
   }catch(e){cloud.rt=null;}
 }
 function stopRealtime(){if(cloud.rt){try{cloud.rt.unsubscribe();}catch(e){}cloud.rt=null;}}
-function changePass(){
-  try{localStorage.removeItem('summer26_pass');}catch(e){}
-  clearTimeout(cloud.timer);cloud.key=null;cloud.status='local';
-  stopRealtime();cloud.pendingRemote=null;
-  askPass();
-}
-async function cloudPull(preferRemote){
-  const r=await fetch(`${SUPA.url}/rest/v1/planner?id=eq.${cloud.key}&select=data`,{headers:supaHeaders()});
-  if(!r.ok)throw new Error('pull '+r.status);
-  const rows=await r.json();
-  if(rows.length){
-    const remote=rows[0].data||{};
-    if(preferRemote||(remote.savedAt||0)>(state.savedAt||0)){
-      state=Object.assign(blank(),remote);
-      state.testDate='';
-      try{localStorage.setItem('summer26',JSON.stringify(state));}catch(e){}
-    }else if(!preferRemote&&(state.savedAt||0)>(remote.savedAt||0)){cloudPush();}
+async function cloudPull(){
+  const remote=await rpc('planner_get',{p:storedPw()});
+  if(remote){
+    if((remote.savedAt||0)>(state.savedAt||0)){adoptRemote(remote);}
+    else if((state.savedAt||0)>(remote.savedAt||0)){cloudPush();}
   }else{cloudPush();}
 }
 function cloudPush(){
-  if(!cloudEnabled()||!cloud.key)return;
+  if(!cloudEnabled()||!storedPw())return;
   clearTimeout(cloud.timer);
   cloud.status='pending';setStatusNote();
   cloud.timer=setTimeout(async()=>{
     try{
-      const body=Object.assign({},state,{testDate:''});
-      const r=await fetch(`${SUPA.url}/rest/v1/planner`,{method:'POST',
-        headers:Object.assign(supaHeaders(),{Prefer:'resolution=merge-duplicates'}),
-        body:JSON.stringify({id:cloud.key,data:body,updated_at:new Date().toISOString()})});
-      cloud.status=r.ok?'synced':'offline';
-    }catch(e){cloud.status='offline';}
+      const body={tasks:state.tasks,activities:state.activities,blocks:state.blocks,savedAt:state.savedAt||Date.now()};
+      await rpc('planner_set',{p:storedPw(),payload:body});
+      cloud.status='synced';
+      if(cloud.rt){try{cloud.rt.send({type:'broadcast',event:'changed',payload:{t:Date.now()}});}catch(e){}}
+    }catch(e){
+      if(e.message==='badpass'){badPass();return;}
+      cloud.status='offline';
+    }
     setStatusNote();
   },800);
 }
 function statusText(){
   if(!cloudEnabled())return storageOK?'Saved in this browser.':'Preview mode: changes are not saved. Open the file locally or on GitHub Pages for persistence.';
+  if(!unlocked())return 'Locked.';
   return {pending:'Syncing…',synced:'Synced across your devices.',offline:'Offline - saved locally; will sync when back online.',local:'Connecting…'}[cloud.status];
 }
 function setStatusNote(){const el=document.getElementById('storage-note');if(el)el.textContent=statusText();}
@@ -784,7 +799,7 @@ function setStatusNote(){const el=document.getElementById('storage-note');if(el)
 /* ---------- live refresh ---------- */
 let lastPull=0;
 async function cloudRefresh(){
-  if(!cloudEnabled()||!cloud.key)return;
+  if(!cloudEnabled()||!unlocked())return;
   if(cloud.status==='pending')return;                        // an outgoing edit is in flight
   if(document.querySelector('.overlay'))return;              // don't yank state mid-dialogue
   if(Date.now()-lastPull<3000)return;
@@ -794,7 +809,10 @@ async function cloudRefresh(){
     await cloudPull(false);
     cloud.status='synced';
     if((state.savedAt||0)!==before)render();else setStatusNote();
-  }catch(e){cloud.status='offline';setStatusNote();}
+  }catch(e){
+    if(e.message==='badpass'){badPass();return;}
+    cloud.status='offline';setStatusNote();
+  }
 }
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloudRefresh();});
 window.addEventListener('focus',cloudRefresh);
@@ -803,7 +821,9 @@ setInterval(()=>{if(!document.hidden)cloudRefresh();},20000);
 /* ---------- boot ---------- */
 state.view=state.view||'day';
 render();
-if(cloudEnabled()){cloudInit();}else{openCatchup();}
+if(!unlocked()){askPassword();}
+else if(cloudEnabled()){connectCloud().then(openCatchup);}
+else{openCatchup();}
 
 </script>
 </body>
