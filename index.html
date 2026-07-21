@@ -128,6 +128,9 @@ main{max-width:980px;margin:6px auto 30px;padding:0 16px}
 .excl{opacity:.45}
 .pill-note{font-size:11px;color:var(--tan);font-style:italic}
 
+.grip{cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;color:var(--ink-soft);font-size:15px;padding:2px 4px 0 0;flex:0 0 auto;line-height:1.4}
+.item.dragging{opacity:.95;background:#fff;box-shadow:0 8px 22px rgba(62,42,27,.28);border-radius:10px;position:relative;z-index:5}
+
 /* add rows */
 .addrow{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .addrow input[type=text]{flex:1;min-width:150px}
@@ -232,10 +235,6 @@ main{max-width:980px;margin:6px auto 30px;padding:0 16px}
   <span id="storage-note"></span>
   <span style="flex:1"></span>
   <button class="btn-ghost" id="passbtn" onclick="lockApp()">Lock</button>
-  <label class="switch">Test date:
-    <input type="date" id="testdate" style="padding:3px 6px;font-size:12px" onchange="setTestDate(this.value)">
-  </label>
-  <button class="btn-ghost" onclick="setTestDate('')">reset</button>
 </div>
 
 <nav class="tabs">
@@ -260,19 +259,20 @@ const CAT_RENAMES={Family:'Social',Cycling:'Fitness',Other:'Work'};
 
 /* ---------- state & storage ---------- */
 let state=null, storageOK=true;
-function blank(){return {tasks:[],activities:[],blocks:[],testDate:'',selected:null,view:'day'};}
+function blank(){return {tasks:[],activities:[],blocks:[],dayOrder:{},testDate:'',selected:null,view:'day'};}
 function save(){
-  const snap=JSON.stringify({tasks:state.tasks,activities:state.activities,blocks:state.blocks});
+  const snap=dataSnapshot();
   if(typeof cloud!=='undefined'&&snap!==cloud.lastData){cloud.lastData=snap;state.savedAt=Math.max(Date.now(),(state.savedAt||0)+1);cloudPush();}
   try{localStorage.setItem('summer26',JSON.stringify(state));}catch(e){storageOK=false;}
 }
 function load(){try{const s=localStorage.getItem('summer26');return s?JSON.parse(s):null;}catch(e){storageOK=false;return null;}}
 state=load()||blank();
+state.dayOrder=state.dayOrder||{};
 function fixCats(){[...state.tasks,...state.activities].forEach(o=>{if(CAT_RENAMES[o.cat])o.cat=CAT_RENAMES[o.cat];});}
 fixCats();
 
 /* ---------- date helpers ---------- */
-function todayISO(){if(state.testDate)return state.testDate;const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+function todayISO(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
 function parse(s){const[p,q,r]=s.split('-').map(Number);return new Date(Date.UTC(p,q-1,r));}
 function iso(d){return d.toISOString().slice(0,10);}
 function addDays(s,n){const d=parse(s);d.setUTCDate(d.getUTCDate()+n);return iso(d);}
@@ -328,7 +328,6 @@ function render(){
   else if(state.view==='week')el.innerHTML=viewWeek();
   else if(state.view==='todo')el.innerHTML=viewTodo();
   else el.innerHTML=viewTrips();
-  document.getElementById('testdate').value=state.testDate||'';
   document.getElementById('storage-note').textContent=statusText();
   const pb=document.getElementById('passbtn');if(pb)pb.style.display=cloudEnabled()?'':'none';
   save();
@@ -362,27 +361,44 @@ function washWeek(label,days){
 }
 
 /* ----- day view ----- */
+function dayEntries(d){
+  const entries=[
+    ...tasksOn(d).map(t=>({kind:'task',id:t.id,o:t})),
+    ...actsOn(d).map(a=>({kind:'act',id:a.id,o:a}))
+  ];
+  const ord=(state.dayOrder&&state.dayOrder[d])||[];
+  entries.sort((a,b)=>{
+    const ia=ord.indexOf(a.id),ib=ord.indexOf(b.id);
+    return (ia<0?1e9:ia)-(ib<0?1e9:ib);
+  });
+  return entries;
+}
 function viewDay(){
   const d=state.selected,b=blockFor(d),t=todayISO();
-  const tasks=tasksOn(d),acts=actsOn(d);
   let items='';
-  tasks.forEach(task=>{
-    const done=task.status==='complete'||!!task.progress[d];
-    const span=task.start===task.end?'':` <span class="chip">${fmtShort(task.start)} → ${fmtShort(task.end)}</span>`;
-    items+=`<div class="item ${task.exclude?'excl':''}">
-      <button class="tick ${done?'done':''}" onclick="tickTask('${task.id}','${d}')" aria-label="tick"></button>
-      <div class="body"><div class="t ${done?'done':''}">${esc(task.title)}</div>
-      <div class="meta">${catDot(task.cat)}<span class="chip brass">master list</span>${span}${task.exclude?'<span class="pill-note">not exported</span>':''}</div></div>
-      <button class="more" onclick="taskMenu('${task.id}','${d}')">⋯</button></div>`;
-  });
-  acts.forEach(a=>{
-    items+=`<div class="item ${a.exclude?'excl':''}">
-      <button class="tick ${a.status==='done'?'done':''}" onclick="tickAct('${a.id}')" aria-label="tick"></button>
-      <div class="body"><div class="t ${a.status==='done'?'done':''}">${esc(a.title)}</div>
-      <div class="meta">${catDot(a.cat)}${a.exclude?'<span class="pill-note">not exported</span>':''}</div></div>
-      <button class="more" onclick="actMenu('${a.id}')">⋯</button></div>`;
+  dayEntries(d).forEach(en=>{
+    if(en.kind==='task'){
+      const task=en.o;
+      const done=task.status==='complete'||!!task.progress[d];
+      const span=task.start===task.end?'':` <span class="chip">${fmtShort(task.start)} → ${fmtShort(task.end)}</span>`;
+      items+=`<div class="item ${task.exclude?'excl':''}" data-oid="${task.id}">
+        <span class="grip" onpointerdown="dragStart(event,'${d}')" aria-label="drag to reorder">⠿</span>
+        <button class="tick ${done?'done':''}" onclick="tickTask('${task.id}','${d}')" aria-label="tick"></button>
+        <div class="body"><div class="t ${done?'done':''}">${esc(task.title)}</div>
+        <div class="meta">${catDot(task.cat)}<span class="chip brass">master list</span>${span}${task.exclude?'<span class="pill-note">not exported</span>':''}</div></div>
+        <button class="more" onclick="taskMenu('${task.id}','${d}')">⋯</button></div>`;
+    }else{
+      const a=en.o;
+      items+=`<div class="item ${a.exclude?'excl':''}" data-oid="${a.id}">
+        <span class="grip" onpointerdown="dragStart(event,'${d}')" aria-label="drag to reorder">⠿</span>
+        <button class="tick ${a.status==='done'?'done':''}" onclick="tickAct('${a.id}')" aria-label="tick"></button>
+        <div class="body"><div class="t ${a.status==='done'?'done':''}">${esc(a.title)}</div>
+        <div class="meta">${catDot(a.cat)}${a.exclude?'<span class="pill-note">not exported</span>':''}</div></div>
+        <button class="more" onclick="actMenu('${a.id}')">⋯</button></div>`;
+    }
   });
   if(!items)items='<p class="muted" style="padding:10px 2px">Nothing planned yet. Add an activity below, or assign a task from the to do list.</p>';
+  else items=`<div id="daylist">${items}</div>`;
   const catOpts=Object.keys(CATS).map(c=>`<option>${c}</option>`).join('');
   return `<div class="daynav">
       <button class="navbtn" onclick="shiftDay(-1)" ${d<=START?'disabled':''}>‹</button>
@@ -396,8 +412,42 @@ function viewDay(){
         <select id="newact-cat">${catOpts}</select>
         <button class="btn btn-navy" onclick="addAct()">Add</button>
       </div>
-      <p class="muted" style="margin-top:8px">Activities added here belong to this day only; if unfinished, tomorrow's catch-up will offer to move them to the to do list.</p>
+      <p class="muted" style="margin-top:8px">Activities added here belong to this day only; if unfinished, tomorrow's catch-up will offer to move them to the to do list. Drag the ⠿ handle to reorder.</p>
     </div>`;
+}
+/* ---------- drag to reorder (pointer events: works for touch and mouse) ---------- */
+let drag=null;
+function dragStart(e,d){
+  e.preventDefault();
+  const row=e.target.closest('.item');if(!row)return;
+  const list=row.parentElement;
+  drag={row,list,d};
+  row.classList.add('dragging');
+  try{e.target.setPointerCapture(e.pointerId);}catch(err){}
+  document.addEventListener('pointermove',dragMove);
+  document.addEventListener('pointerup',dragEnd);
+  document.addEventListener('pointercancel',dragEnd);
+}
+function dragMove(e){
+  if(!drag)return;
+  e.preventDefault();
+  const y=e.clientY;
+  const others=[...drag.list.querySelectorAll('.item:not(.dragging)')];
+  const after=others.find(el=>{const r=el.getBoundingClientRect();return y<r.top+r.height/2;});
+  if(after)drag.list.insertBefore(drag.row,after);
+  else drag.list.appendChild(drag.row);
+}
+function dragEnd(){
+  if(!drag)return;
+  document.removeEventListener('pointermove',dragMove);
+  document.removeEventListener('pointerup',dragEnd);
+  document.removeEventListener('pointercancel',dragEnd);
+  drag.row.classList.remove('dragging');
+  state.dayOrder=state.dayOrder||{};
+  state.dayOrder[drag.d]=[...drag.list.querySelectorAll('.item')].map(el=>el.dataset.oid);
+  drag=null;
+  save();
+  render();
 }
 function shiftDay(n){state.selected=clampToHoliday(addDays(state.selected,n));render();}
 function catDot(c){return `<span class="cat"><i style="background:${CATS[c]||'#999'}"></i>${c}</span>`;}
@@ -416,10 +466,9 @@ function viewWeek(){
   const cells=days.map(d=>{
     if(d<START||d>END)return `<div class="wcell" style="opacity:.35"><div class="wdow">${fmtShort(d)}</div></div>`;
     const b=blockFor(d),dd=parse(d);
-    const rows=[
-      ...tasksOn(d).map(task=>`<li class="${(task.status==='complete'||task.progress[d])?'done':''}"><i style="background:${CATS[task.cat]}"></i>${esc(task.title)}</li>`),
-      ...actsOn(d).map(a=>`<li class="${a.status==='done'?'done':''}"><i style="background:${CATS[a.cat]}"></i>${esc(a.title)}</li>`)
-    ].join('');
+    const rows=dayEntries(d).map(en=>en.kind==='task'
+      ?`<li class="${(en.o.status==='complete'||en.o.progress[d])?'done':''}"><i style="background:${CATS[en.o.cat]}"></i>${esc(en.o.title)}</li>`
+      :`<li class="${en.o.status==='done'?'done':''}"><i style="background:${CATS[en.o.cat]}"></i>${esc(en.o.title)}</li>`).join('');
     return `<div class="wcell ${b?(blockIsHome(b)?'guest':'away'):''} ${d===t?'today':''}" onclick="pick('${d}')">
       <div class="wdow">${DOW[dd.getUTCDay()]}${b?' · '+esc(b.name):''}</div><div class="wd">${dd.getUTCDate()} ${MON[dd.getUTCMonth()].slice(0,3)}</div><ul>${rows}</ul></div>`;
   }).join('');
@@ -671,12 +720,11 @@ function doExport(){
   let html=`<h1>Summer 2026</h1><div class="psub">${fmtLong(days[0])} – ${fmtLong(days[days.length-1])}</div>`;
   days.forEach(d=>{
     const b=blockFor(d);
-    const ts=tasksOn(d).filter(t=>!t.exclude),as=actsOn(d).filter(a=>!a.exclude);
-    if(!ts.length&&!as.length&&!withEmpty)return;
-    const lis=[
-      ...ts.map(t=>`<li class="${(t.status==='complete'||t.progress[d])?'pdone':''}">${esc(t.title)} <em>(${t.cat})</em></li>`),
-      ...as.map(a=>`<li class="${a.status==='done'?'pdone':''}">${esc(a.title)} <em>(${a.cat})</em></li>`)
-    ].join('');
+    const ens=dayEntries(d).filter(en=>!en.o.exclude);
+    if(!ens.length&&!withEmpty)return;
+    const lis=ens.map(en=>en.kind==='task'
+      ?`<li class="${(en.o.status==='complete'||en.o.progress[d])?'pdone':''}">${esc(en.o.title)} <em>(${en.o.cat})</em></li>`
+      :`<li class="${en.o.status==='done'?'pdone':''}">${esc(en.o.title)} <em>(${en.o.cat})</em></li>`).join('');
     html+=`<div class="pday"><h2>${fmtLong(d)} <span class="ptag">${b?(blockIsHome(b)?'Home · ':'Away · ')+esc(b.name):'Home'}</span></h2>${lis?'<ul>'+lis+'</ul>':'<ul><li>-</li></ul>'}</div>`;
   });
   if(withTodo){
@@ -688,9 +736,6 @@ function doExport(){
   setTimeout(()=>window.print(),80);
 }
 
-/* ---------- test date ---------- */
-function setTestDate(v){state.testDate=v||'';save();openCatchup();render();}
-
 /* ---------- cloud sync ---------- */
 /* One fixed row; the password lives ONLY in the database (bcrypt-hashed).
    Every read and write calls a Postgres function that verifies it, so the
@@ -699,7 +744,7 @@ const ROW_ID='planner-main';
 
 let cloud={timer:null,status:'local',rt:null,pendingRemote:null,lastData:''};
 function cloudEnabled(){return !!(SUPA.url&&SUPA.anon);}
-function dataSnapshot(){return JSON.stringify({tasks:state.tasks,activities:state.activities,blocks:state.blocks});}
+function dataSnapshot(){return JSON.stringify({tasks:state.tasks,activities:state.activities,blocks:state.blocks,dayOrder:state.dayOrder});}
 cloud.lastData=dataSnapshot();
 function supaHeaders(){
   const h={apikey:SUPA.anon,'Content-Type':'application/json'};
@@ -750,6 +795,7 @@ function adoptRemote(remote){
   state.tasks=remote.tasks||[];
   state.activities=remote.activities||[];
   state.blocks=remote.blocks||[];
+  state.dayOrder=remote.dayOrder||{};
   state.savedAt=remote.savedAt||Date.now();
   fixCats();
   cloud.lastData=dataSnapshot();
@@ -791,7 +837,7 @@ function cloudPush(){
   cloud.status='pending';setStatusNote();
   cloud.timer=setTimeout(async()=>{
     try{
-      const body={tasks:state.tasks,activities:state.activities,blocks:state.blocks,savedAt:state.savedAt||Date.now()};
+      const body={tasks:state.tasks,activities:state.activities,blocks:state.blocks,dayOrder:state.dayOrder,savedAt:state.savedAt||Date.now()};
       await rpc('planner_set',{p:storedPw(),payload:body});
       cloud.status='synced';
       if(cloud.rt){try{cloud.rt.send({type:'broadcast',event:'changed',payload:{t:Date.now()}});}catch(e){}}
