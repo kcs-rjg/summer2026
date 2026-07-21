@@ -244,7 +244,7 @@ main{max-width:980px;margin:6px auto 30px;padding:0 16px}
 const SUPA={url:'https://khzebvjhyofaxoopifgl.supabase.co',anon:'sb_publishable_MwHxCph1pFbgbX8vhq5Kfw_m8QSz7ta'};
 /* ------------------------------------------------------------------ */
 const START='2026-07-20', END='2026-08-26';
-const CATS={Social:'#D9705F',Admin:'#2E4159',Music:'#C29B3C',Fitness:'#7E8F6C',House:'#B0763F','Trip prep':'#55606B',Work:'#8A8177'};
+const CATS={Social:'#D9705F',Admin:'#2E4159',Music:'#C29B3C',Fitness:'#7E8F6C',House:'#B0763F','Trip prep':'#55606B',Other:'#8A8177'};
 const CAT_RENAMES={Family:'Social',Cycling:'Fitness'};
 
 /* ---------- state & storage ---------- */
@@ -679,7 +679,11 @@ async function hashPass(s){
   for(let i=0;i<s.length;i++){const c=s.charCodeAt(i);h1=(h1*33)^c;h2=(h2*33)^c;h1>>>=0;h2>>>=0;}
   return h1.toString(16)+h2.toString(16)+s.length.toString(16);
 }
-function supaHeaders(){return {apikey:SUPA.anon,Authorization:'Bearer '+SUPA.anon,'Content-Type':'application/json'};}
+function supaHeaders(){
+  const h={apikey:SUPA.anon,'Content-Type':'application/json'};
+  if(!SUPA.anon.startsWith('sb_'))h.Authorization='Bearer '+SUPA.anon;   // legacy JWT keys only
+  return h;
+}
 async function cloudInit(){
   if(!cloudEnabled()){cloud.status='local';return;}
   let pass=null;try{pass=localStorage.getItem('summer26_pass');}catch(e){}
@@ -745,6 +749,25 @@ function statusText(){
   return {pending:'Syncing…',synced:'Synced across your devices.',offline:'Offline - saved locally; will sync when back online.',local:'Connecting…'}[cloud.status];
 }
 function setStatusNote(){const el=document.getElementById('storage-note');if(el)el.textContent=statusText();}
+
+/* ---------- live refresh ---------- */
+let lastPull=0;
+async function cloudRefresh(){
+  if(!cloudEnabled()||!cloud.key)return;
+  if(cloud.status==='pending')return;                        // an outgoing edit is in flight
+  if(document.querySelector('.overlay'))return;              // don't yank state mid-dialogue
+  if(Date.now()-lastPull<10000)return;
+  lastPull=Date.now();
+  try{
+    const before=state.savedAt||0;
+    await cloudPull(false);
+    cloud.status='synced';
+    if((state.savedAt||0)!==before)render();else setStatusNote();
+  }catch(e){cloud.status='offline';setStatusNote();}
+}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)cloudRefresh();});
+window.addEventListener('focus',cloudRefresh);
+setInterval(()=>{if(!document.hidden)cloudRefresh();},60000);
 
 /* ---------- boot ---------- */
 state.view=state.view||'day';
